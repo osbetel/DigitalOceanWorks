@@ -30,17 +30,17 @@ def ls(ctx, droplets, snapshots, images, apps, regions, domains):
     Option defaults to -d for droplets if unspecified.
     """
     if droplets:
-        listDroplets()
+        listDroplets(do_print=True)
     if snapshots:
-        listImages("snapshot")
+        listImages("snapshot", do_print=True)
     if images:
-        listImages()
+        listImages(do_print=True)
     if apps:
-        listImages("application")
+        listImages("application", do_print=True)
     if regions:
-        listRegions()
+        listRegions(do_print=True)
     if domains:
-        listDomains()
+        listDomains(do_print=True)
 
     # if all the arguments are false
     if not any(ctx.params.values()):
@@ -48,18 +48,19 @@ def ls(ctx, droplets, snapshots, images, apps, regions, domains):
     return
 
 
-def listDroplets():
+def listDroplets(do_print=False):
     droplets = MANAGER.get_all_droplets()
     data =[]
     for drop in droplets:
         data.append([drop.name, drop.status, drop.ip_address,
                      drop.private_ip_address, drop.id])
 
-    print(tabulate(data, headers=["name", "status", "ipv4", "local ip", "id"], tablefmt="presto"))
+    if do_print:
+       print(tabulate(data, headers=["name", "status", "ipv4", "local ip", "id"], tablefmt="presto"))
     return data
 
 
-def listImages(image_type=""):
+def listImages(image_type="", do_print=False):
     if image_type == "application":
         images = MANAGER.get_app_images()
     elif image_type == "snapshot":
@@ -70,35 +71,73 @@ def listImages(image_type=""):
     data = []
     for i in images:
         data.append([i.distribution, i.name, i.id, i.size_gigabytes, i.created_at])
-    print(tabulate(data, headers=["distro", "ver", "id", "size", "created_at"], tablefmt="presto"))
+
+    if do_print:
+        print(tabulate(data, headers=["distro", "ver", "id", "size", "created_at"], tablefmt="presto"))
     return data
 
 
-def listRegions():
+def listRegions(do_print=False):
     available = MANAGER.get_all_regions()
     data = []
     for region in available:
         data.append((region.name, region.slug))
     data.sort(key = lambda x: x[0])
-    print(tabulate(data, headers=("Region", "Code"), tablefmt="presto"))
+
+    if do_print:
+        print(tabulate(data, headers=("Region", "Code"), tablefmt="presto"))
     return data
 
 
-def listDomains():
+def listDomains(do_print=False):
     domains = MANAGER.get_all_domains()
-    # get_records, create_new_domain
+    subdomains = []
     for d in domains:
         tld = d.name
-        subdomains = []
         records = d.get_records()
         # search for subdomains (r.name is not null and r.type is A)
         for r in records:
             if r.name != "@" and r.type == "A":
                 # valid subdomain with a redirect (or not)
                 subdomains.append([tld, f"{r.name}.{tld}", r.data])
-        print(tabulate(subdomains, headers=("TLD", "Sub-Domain", "ipv4"), tablefmt="presto"))
-        return subdomains
 
+    if do_print:
+        print(tabulate(subdomains, headers=("TLD", "Sub-Domain", "ipv4"), tablefmt="presto"))
+    return subdomains
+
+
+@ocean.command()
+@click.option("-c", "--create", is_flag=True, default=False, help="create record")
+@click.option("-d", "--delete", is_flag=True, default=False, help="delete record")
+@click.argument("top_level_domain_name")
+@click.argument("target_record", nargs=-1)
+def domain(create, delete, top_level_domain_name, target_record):
+    """
+    String of a dict -> {"type": "A", "subdomain": "vpn", "destination_ip": "69.420}
+    """
+    if not any((create, delete)):
+        print("Must specify -c/--create or -d/--delete records")
+        return
+
+    tld = MANAGER.get_domain(top_level_domain_name)
+    if create:
+        record_type = target_record[0]
+        subdomain = target_record[1]
+        destination_ip = target_record[2]
+        tld.create_new_domain_record(type=record_type,
+                                     name=subdomain,
+                                     data=destination_ip)
+        print(f"Created domain record for: {subdomain}.{top_level_domain_name}")
+        return
+
+    if delete:
+        records = tld.get_records()
+        subdomain = target_record[0]
+        for r in records:
+            if r.name == subdomain:
+                r.destroy()
+                print(f"Destroyed domain record for: {subdomain}.{top_level_domain_name}")
+                return
 
 
 def getDroplet(name_or_id: str):
@@ -151,6 +190,7 @@ def snapshot(create, destroy, droplet_snapshot_name):
     """
     if not any((create, destroy)):
         print("Must specify -c/--create or -d/--destroy")
+        print("`ocean snapshot -h` for more")
         return
 
     if len(droplet_snapshot_name) == 1:
@@ -172,14 +212,16 @@ def snapshot(create, destroy, droplet_snapshot_name):
         for s in snapshots:
             if s.name == snapshot_name or s.id == snapshot_name:
                 print(f"Created snapshot ({snapshot_name}, {s.id})")
-                start(s.name)
+                time.sleep(5)
+                start(droplet_name)
+                print(f"Droplet ({droplet_name}) rebooted after snapshot")
                 return
 
     if destroy:
         for s in snapshots:
             if s.name == snapshot_name or s.id == snapshot_name:
                 s.destroy()
-                print(f"Snapshot {s.name} destroyed")
+                print(f"Snapshot ({s.name}) destroyed")
                 return
         print("No snapshot by that name/id to destroy")
 
