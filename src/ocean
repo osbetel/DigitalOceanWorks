@@ -1,39 +1,86 @@
 #!/usr/bin/env python3
-import digitalocean as do
 import os, sys, time
+
+import digitalocean as do
+import click
 from tabulate import tabulate
 
 HOME = os.path.expanduser("~")
 TOKEN = open(HOME + "/.ssh/DigitalOceanToken").read().strip()
 MANAGER = do.Manager(token=TOKEN)
-COMMANDS = [["h or help", "list or ls", "start", "stop", "reboot", "snapshot",
-             "create", "destroy", "ssh", "sftp"],
-            ["list all options and commands", "use \"ocean ls help\" for more",
-             "power on a droplet", "power off a droplet", "reboot one or all droplets",
-             "take a snapshot of a droplet", "create a droplet", "destroy a droplet",
-             "ssh into a droplet", "sftp into a droplet"]]
-
-def listCommands():
-    l = len(COMMANDS[0])
-    print()
-    for i in range(l):
-        print(COMMANDS[0][i].ljust(20) + COMMANDS[1][i].ljust(20))
 
 
-def listAllDroplets():
+CONTEXT_SETTINGS = dict(help_option_names=['-h', '-help'])
+
+@click.group(context_settings=CONTEXT_SETTINGS)
+def ocean():
+    pass
+
+
+@ocean.command()
+@click.option("-d", "--droplets", is_flag=True, default=False, help="list droplets")
+@click.option("-s", "--snapshots", is_flag=True, default=False, help="list snapshots")
+@click.option("-i", "--images", is_flag=True, default=False, help="list images")
+@click.option("-a", "--apps", is_flag=True, default=False, help="list app images")
+@click.option("-r", "--regions", is_flag=True, default=False, help="list regions")
+def ls(droplets, snapshots, images, apps, regions):
+    """
+    \b
+    usage: ocean ls -d/-s/-i/-a/-r (defaults to -d)
+    """
+    if droplets:
+        print(listDroplets())
+    elif snapshots:
+        print(listImages("snapshot"))
+    elif images:
+        print(listImages())
+    elif apps:
+        print(listImages("application"))
+    elif regions:
+        print(listRegions())
+    else:
+        print(listDroplets())
+    return
+
+
+def listDroplets():
     droplets = MANAGER.get_all_droplets()
     data =[]
     for drop in droplets:
         data.append([drop.name, drop.status, drop.ip_address,
                      drop.private_ip_address, drop.id])
 
-    print(tabulate(data, headers=["name", "status", "ipv4", "local ip", "id"], tablefmt="fancy_grid"))
+    table = tabulate(data, headers=["name", "status", "ipv4", "local ip", "id"], tablefmt="presto")
+    return table
 
 
-def getDroplet(nameOrID: str):
+def listImages(image_type=""):
+    if image_type == "application":
+        images = MANAGER.get_app_images()
+    elif image_type == "snapshot":
+        images = MANAGER.get_my_images()
+    else:
+        images = MANAGER.get_distro_images()
+
+    metadata = []
+    for i in images:
+        metadata.append([i.distribution, i.name, i.id, i.size_gigabytes, i.created_at])
+    return tabulate(metadata, headers=["distro", "ver", "id", "size", "created_at"], tablefmt="presto")
+
+
+def listRegions():
+    available = MANAGER.get_all_regions()
+    r = []
+    for reg in available:
+        r.append((reg.name, reg.slug))
+    r.sort(key = lambda x: x[0])
+    return tabulate(r, headers=("Region", "Code"), tablefmt="presto")
+
+
+def getDroplet(name_or_id: str):
     try:
         for drop in MANAGER.get_all_droplets():
-            if drop.name == nameOrID or str(drop.id) == nameOrID:
+            if drop.name == name_or_id or str(drop.id) == name_or_id:
                 return MANAGER.get_droplet(drop.id)
         raise AttributeError # droplet not found
     except AttributeError:
@@ -41,79 +88,82 @@ def getDroplet(nameOrID: str):
         exit()
 
 
-def stopDroplet(name):
-    droplet = getDroplet(name)
-    droplet.power_off()
-    print("Droplet \"" + name + "\" powered off.")
-
-
-def startDroplet(name):
-    droplet = getDroplet(name)
+@ocean.command()
+@click.argument("name_or_id")
+def start(name_or_id):
+    """
+    \b
+    usage: ocean stop [droplet name/id#]
+    """
+    droplet = getDroplet(name_or_id)
     droplet.power_on()
-    print("Droplet \"" + name + "\" powered on.")
+    print("Droplet \"" + name_or_id + "\" powered on.")
+    return
 
 
-def takeSnapshot(dropName, snapName):
-    droplet = getDroplet(dropName)
-    droplet.take_snapshot(snapName, True, True)
+@ocean.command()
+@click.argument("name_or_id")
+def stop(name_or_id):
+    """
+    \b
+    usage: ocean start [droplet name/id#]
+    """
+    droplet = getDroplet(name_or_id)
+    droplet.power_off()
+    print("Droplet \"" + name_or_id + "\" powered off.")
+    return
 
 
-def listAllSnapshots():
-    snapshots = MANAGER.get_all_snapshots()
-    data = []
-    for snap in snapshots:
-        data.append([snap.name, snap.size_gigabytes, snap.created_at, snap.id])
+@ocean.command()
+@click.argument("droplet-name")
+@click.argument("snapshot_name")
+def snapshot(droplet_name, snapshot_name):
+    """
+    \b
+    usage: ocean snapshot [droplet name/id#] [snapshot name]
+    """
+    droplet = getDroplet(droplet_name)
+    droplet.take_snapshot(snapshot_name, True, True)
+    return
 
-    print(tabulate(data, headers=["name", "size (gb)", "created_date", "id"], tablefmt="fancy_grid"))
 
-
-def listAllImages(*image_type):
-    if len(image_type) > 0:
-        if image_type[0] == "-app" or image_type[0] == "-a":
-            images = MANAGER.get_app_images()
-        elif image_type[0] == "-self" or image_type[0] == "-s":
-            images = MANAGER.get_my_images()
+@ocean.command()
+@click.argument("name_or_id")
+@click.option("-a", "--all", is_flag=True, default=False)
+def reboot(name_or_id, all):
+    """
+    \b
+    usage: ocean reboot [droplet name/id#]
+    """
+    if all:
+        rebootAllDroplets()
     else:
-        images = MANAGER.get_distro_images()
-    ids = []
-    ver = []
-    distro = []
-    for i in images:
-        ids.append(i.id)
-        ver.append(i.name)
-        distro.append(i.distribution)
-
-    tabd = zip(distro, ver, ids)
-    print(tabulate(tabd, headers=["distro", "ver", "id"], tablefmt="fancy_grid"))
-
-
-def listAvailRegions():
-    available = MANAGER.get_all_regions()
-    r = []
-    for reg in available:
-        r.append((reg.name, reg.slug))
-    r.sort(key = lambda x: x[0])
-    print(tabulate(r, headers=("Region", "Code"), tablefmt="fancy_grid"))
-
-
-def rebootDroplet(name):
-    droplet = getDroplet(name)
-    droplet.reboot()
+        droplet = getDroplet(name_or_id)
+        droplet.reboot()
+    return
 
 
 def rebootAllDroplets():
     droplets = MANAGER.get_all_droplets()
     for drop in droplets:
         drop.reboot()
+    return
 
 
-def createDroplet(name, target_region="sfo2", image_id="48536776"):
+@ocean.command()
+@click.argument("name")
+@click.option("-r", "--region", default="sfo2", help="droplet region. Use \"ocean ls -r\" for more")
+@click.option("-id", "--image_id", default=69439389, help="image/distribution id for droplet base")
+def create(name, region, image_id):
+    """
+    \b
+    usage: ocean create [droplet name] -r [region] -id [image id]
+    """
     keys = MANAGER.get_all_sshkeys()
-
     try:
         droplet = do.Droplet(token=TOKEN,
                              name=name,
-                             region=target_region,  # san-fran 2
+                             region=region,  # san-fran 2
                              image=str(image_id),  # Ubuntu 18.10 x64
                              size_slug="s-1vcpu-1gb",  # 1gb
                              private_networking=True,
@@ -128,156 +178,48 @@ def createDroplet(name, target_region="sfo2", image_id="48536776"):
     except TypeError:
         print("Created droplet (err): " + name, droplet.id)
         print("IP addr: [could not fetch]")
+    return droplet
 
 
-def destroyDroplet(name):
-    droplet = getDroplet(name)
+@ocean.command()
+@click.argument("name_or_id")
+def destroy(name_or_id):
+    """
+    \b
+    usage: ocean destroy [droplet name]
+    """
+    droplet = getDroplet(name_or_id)
     droplet.destroy()
-    print("Destroyed droplet: " + name, droplet.id)
+    print("Destroyed droplet: " + name_or_id, droplet.id)
     print("IP addr: " + droplet.ip_address)
+    return
 
 
-def ssh(nameOrID):
-    droplet = getDroplet(nameOrID)
+@ocean.command()
+@click.argument("name_or_id")
+def ssh(name_or_id):
+    """
+    \b
+    usage: ocean ssh [droplet name/id#]
+    """
+    droplet = getDroplet(name_or_id)
     ipaddr = droplet.ip_address
     os.system("ssh -i ~/.ssh/DigitalOcean root@" + ipaddr)
+    return
 
 
-def sftp(nameOrID):
-    droplet = getDroplet(nameOrID)
+@ocean.command()
+@click.argument("name_or_id")
+def sftp(name_or_id):
+    """
+    \b
+    usage: ocean sftp [droplet name/id#]
+    """
+    droplet = getDroplet(name_or_id)
     ipaddr = droplet.ip_address
     os.system("sftp -i ~/.ssh/DigitalOcean root@" + ipaddr)
-
-
-def checkUsageBalance():
-    print(MANAGER.get_account().status)
+    return
 
 
 if __name__ == '__main__':
-
-    if len(sys.argv) == 1:
-        print("Usage: ocean [COMMAND]")
-        print("Type \"ocean help\" for more.")
-
-    elif (sys.argv[1] == "help" or sys.argv[1] == "h") and len(sys.argv) == 2:
-        listCommands()
-
-    elif sys.argv[1] == "list" or sys.argv[1] == "ls":
-
-        if not (2 <= len(sys.argv) <= 4):
-            print("Usage: ocean list <droplets (-d), snapshots (-s), images (-i), apps (-a), regions (-r)>")
-        elif len(sys.argv) == 2:
-            listAllDroplets()
-        elif sys.argv[2] in ["droplets", "-d"]:
-            listAllDroplets()
-        elif sys.argv[2] in ["snapshots", "-s"]:
-            listAllSnapshots()
-        elif sys.argv[2] in ["images", "-i"]:
-            if len(sys.argv) == 4 and sys.argv[3] in ["-apps", "-a"]:
-                listAllImages(sys.argv[3])
-            else:
-                listAllImages()
-        elif sys.argv[2] in ["apps", "-a"]:
-            listAllImages("-a")
-        elif sys.argv[2] in ["regions", "-r"]:
-            listAvailRegions()
-        elif len(sys.argv) == 3 and sys.argv[2] in ["help", "-h"]:
-            print("Usage: ocean list <droplets (-d), snapshots (-s), images (-i), apps (-a), regions (-r)>")
-        else:
-            print("Usage: ocean list <droplets (-d), snapshots (-s), images (-i), apps (-a), regions (-r)>")
-
-
-    elif sys.argv[1] == "start":
-        if len(sys.argv) != 3:
-            print("Usage: ocean start <droplet name>")
-        else:
-            startDroplet(sys.argv[2])
-
-    elif sys.argv[1] == "stop":
-        if len(sys.argv) != 3:
-            print("Usage: ocean stop <droplet name>")
-        else:
-            stopDroplet(sys.argv[2])
-
-    elif sys.argv[1] == "reboot":
-        if len(sys.argv) != 3:
-            print("Usage: ocean reboot <droplet name, -all, -a>")
-        elif sys.argv[2] == "-all" or sys.argv[2] == "-a":
-            rebootAllDroplets()
-        else:
-            rebootDroplet(sys.argv[2])
-
-    elif sys.argv[1] == "snapshot":
-        if len(sys.argv) != 4:
-            print("Usage: ocean snapshot <droplet name> <snapshot name>")
-        else:
-            takeSnapshot(sys.argv[2], sys.argv[3])
-
-    elif sys.argv[1] == "create":
-        if len(sys.argv) < 3:
-            print("Usage: ocean create <droplet name> <-r region> <-d distro id>")
-        elif len(sys.argv) == 3:
-            createDroplet(sys.argv[2]) # default to ubuntu 18.04 x64 in sfo2
-        elif len(sys.argv) > 3:
-
-            # set default region and distribution
-            region = None
-            distro = None
-            sendRegion = False
-            sendDistro = False
-
-            # user either specified region, distro ID, or both
-            if "-r" in sys.argv:
-                idx = sys.argv.index("-r")
-                region = sys.argv[idx + 1]
-                sendRegion = True
-
-            elif "-region" in sys.argv:
-                idx = sys.argv.index("-region")
-                region = sys.argv[idx + 1]
-                sendRegion = True
-
-            if "-d" in sys.argv:
-                idx = sys.argv.index("-d")
-                distro = sys.argv[idx + 1]
-                sendDistro = True
-
-            elif "-distro" in sys.argv:
-                idx = sys.argv.index("-distro")
-                distro = sys.argv[idx + 1]
-                sendDistro = True
-
-            if sendRegion and sendDistro:
-                createDroplet(sys.argv[2], target_region=region, image_id=distro)
-            elif sendRegion:
-                createDroplet(sys.argv[2], target_region=region)
-            elif sendDistro:
-                createDroplet(sys.argv[2], image_id=distro)
-
-        else:
-            print("Usage: ocean create <droplet name> <-r region> <-d distro id>")
-
-    elif sys.argv[1] == "destroy":
-        if len(sys.argv) != 3:
-            print("Usage: ocean destroy <droplet name>")
-        else:
-            destroyDroplet(sys.argv[2])
-
-    elif sys.argv[1] == "ssh":
-        if len(sys.argv) == 3:
-            ssh(sys.argv[2])
-        else:
-            print("Usage: ocean ssh <droplet name>")
-
-    elif sys.argv[1] == "sftp":
-        if len(sys.argv) == 3:
-            sftp(sys.argv[2])
-        else:
-            print("Usage: ocean sftp <droplet name>")
-
-    elif sys.argv[1] == "balance":
-        checkUsageBalance()
-
-    else:
-        print("Usage: ocean [COMMAND]")
-        print("Type \"ocean help\" for more.")
+    ocean()
