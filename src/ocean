@@ -113,7 +113,10 @@ def listDomains(do_print=False):
 @click.argument("target_record", nargs=-1)
 def domain(create, delete, top_level_domain_name, target_record):
     """
-    String of a dict -> {"type": "A", "subdomain": "vpn", "destination_ip": "69.420}
+    usage: ocean domain -c url.com [A/AAAA/CNAME/MX/NS/SRV/CAA/TXT] [subdomain] [destination IP]
+        eg: ocean domain -c url.com A wow 1.1.1.1 ==> creates A record for wow.url.com -> 1.1.1.1
+    usage: ocean domain -d url.com [subdomain] ==> deletes subdomain.url.com records
+    TODO: add support for more specific deletion of records
     """
     if not any((create, delete)):
         print("Must specify -c/--create or -d/--delete records")
