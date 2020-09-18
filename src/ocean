@@ -32,7 +32,7 @@ def ls(ctx, droplets, snapshots, images, apps, regions, domains):
     if droplets:
         listDroplets(do_print=True)
     if snapshots:
-        listImages("snapshot", do_print=True)
+        listSnapshots(do_print=True)
     if images:
         listImages(do_print=True)
     if apps:
@@ -56,24 +56,33 @@ def listDroplets(do_print=False):
                      drop.private_ip_address, drop.id])
 
     if do_print:
-       print(tabulate(data, headers=["name", "status", "ipv4", "local ip", "id"], tablefmt="presto"))
+        print(tabulate(data, headers=["name", "status", "ipv4", "local ip", "id"], tablefmt="presto"))
+    return data
+
+
+def listSnapshots(do_print=False):
+    images = MANAGER.get_my_images()
+    data = []
+    for i in images:
+        data.append([i.name, i.id, i.created_at])
+
+    if do_print:
+        print(tabulate(data, headers=["snapshot", "id", "timestamp"], tablefmt="presto"))
     return data
 
 
 def listImages(image_type="", do_print=False):
     if image_type == "application":
         images = MANAGER.get_app_images()
-    elif image_type == "snapshot":
-        images = MANAGER.get_my_images()
     else:
         images = MANAGER.get_distro_images()
 
     data = []
     for i in images:
-        data.append([i.distribution, i.name, i.id, i.size_gigabytes, i.created_at])
+        data.append([i.distribution, i.name, i.id])
 
     if do_print:
-        print(tabulate(data, headers=["distro", "ver", "id", "size", "created_at"], tablefmt="presto"))
+        print(tabulate(data, headers=["distro", "ver", "id"], tablefmt="presto"))
     return data
 
 
