@@ -9,7 +9,6 @@ HOME = os.path.expanduser("~")
 TOKEN = open(HOME + "/.ssh/DigitalOceanToken").read().strip()
 MANAGER = do.Manager(token=TOKEN)
 
-
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '-help'])
 
 @click.group(context_settings=CONTEXT_SETTINGS)
@@ -23,23 +22,29 @@ def ocean():
 @click.option("-i", "--images", is_flag=True, default=False, help="list images")
 @click.option("-a", "--apps", is_flag=True, default=False, help="list app images")
 @click.option("-r", "--regions", is_flag=True, default=False, help="list regions")
-def ls(droplets, snapshots, images, apps, regions):
+@click.option("-dm", "--domains", is_flag=True, default=False, help="list domains and subdomains")
+@click.pass_context
+def ls(ctx, droplets, snapshots, images, apps, regions, domains):
     """
     \b
-    usage: ocean ls -d/-s/-i/-a/-r (defaults to -d)
+    Option defaults to -d for droplets if unspecified.
     """
     if droplets:
-        print(listDroplets())
-    elif snapshots:
-        print(listImages("snapshot"))
-    elif images:
-        print(listImages())
-    elif apps:
-        print(listImages("application"))
-    elif regions:
-        print(listRegions())
-    else:
-        print(listDroplets())
+        listDroplets()
+    if snapshots:
+        listImages("snapshot")
+    if images:
+        listImages()
+    if apps:
+        listImages("application")
+    if regions:
+        listRegions()
+    if domains:
+        listDomains()
+
+    # if all the arguments are false
+    if not any(ctx.params.values()):
+        listDroplets()
     return
 
 
@@ -50,8 +55,8 @@ def listDroplets():
         data.append([drop.name, drop.status, drop.ip_address,
                      drop.private_ip_address, drop.id])
 
-    table = tabulate(data, headers=["name", "status", "ipv4", "local ip", "id"], tablefmt="presto")
-    return table
+    print(tabulate(data, headers=["name", "status", "ipv4", "local ip", "id"], tablefmt="presto"))
+    return data
 
 
 def listImages(image_type=""):
@@ -62,19 +67,38 @@ def listImages(image_type=""):
     else:
         images = MANAGER.get_distro_images()
 
-    metadata = []
+    data = []
     for i in images:
-        metadata.append([i.distribution, i.name, i.id, i.size_gigabytes, i.created_at])
-    return tabulate(metadata, headers=["distro", "ver", "id", "size", "created_at"], tablefmt="presto")
+        data.append([i.distribution, i.name, i.id, i.size_gigabytes, i.created_at])
+    print(tabulate(data, headers=["distro", "ver", "id", "size", "created_at"], tablefmt="presto"))
+    return data
 
 
 def listRegions():
     available = MANAGER.get_all_regions()
-    r = []
-    for reg in available:
-        r.append((reg.name, reg.slug))
-    r.sort(key = lambda x: x[0])
-    return tabulate(r, headers=("Region", "Code"), tablefmt="presto")
+    data = []
+    for region in available:
+        data.append((region.name, region.slug))
+    data.sort(key = lambda x: x[0])
+    print(tabulate(data, headers=("Region", "Code"), tablefmt="presto"))
+    return data
+
+
+def listDomains():
+    domains = MANAGER.get_all_domains()
+    # get_records, create_new_domain
+    for d in domains:
+        tld = d.name
+        subdomains = []
+        records = d.get_records()
+        # search for subdomains (r.name is not null and r.type is A)
+        for r in records:
+            if r.name != "@" and r.type == "A":
+                # valid subdomain with a redirect (or not)
+                subdomains.append([tld, f"{r.name}.{tld}", r.data])
+        print(tabulate(subdomains, headers=("TLD", "Sub-Domain", "ipv4"), tablefmt="presto"))
+        return subdomains
+
 
 
 def getDroplet(name_or_id: str):
@@ -93,7 +117,7 @@ def getDroplet(name_or_id: str):
 def start(name_or_id):
     """
     \b
-    usage: ocean stop [droplet name/id#]
+    Starts a powered-off droplet
     """
     droplet = getDroplet(name_or_id)
     droplet.power_on()
@@ -106,7 +130,7 @@ def start(name_or_id):
 def stop(name_or_id):
     """
     \b
-    usage: ocean start [droplet name/id#]
+    Powers off a droplet
     """
     droplet = getDroplet(name_or_id)
     droplet.power_off()
@@ -115,16 +139,49 @@ def stop(name_or_id):
 
 
 @ocean.command()
-@click.argument("droplet-name")
-@click.argument("snapshot_name")
-def snapshot(droplet_name, snapshot_name):
+@click.argument("droplet_snapshot_name", nargs=-1)
+@click.option("-c", "--create", is_flag=True, default=False, help="create a snapshot")
+@click.option("-d", "--destroy", is_flag=True, default=False, help="delete a snapshot")
+def snapshot(create, destroy, droplet_snapshot_name):
     """
     \b
-    usage: ocean snapshot [droplet name/id#] [snapshot name]
+    Power-off and take a snapshot of a droplet. Powers-on droplet afterwards.
+    usage: ocean snapshot -c/--create [snapshot_name] [droplet_to_snapshot_name]
+    usage: ocean snapshot -d/--destroy [snapshot_to_destroy_name]
     """
-    droplet = getDroplet(droplet_name)
-    droplet.take_snapshot(snapshot_name, True, True)
-    return
+    if not any((create, destroy)):
+        print("Must specify -c/--create or -d/--destroy")
+        return
+
+    if len(droplet_snapshot_name) == 1:
+        snapshot_name = droplet_snapshot_name[0]
+    elif len(droplet_snapshot_name) == 2:
+        droplet_name = droplet_snapshot_name[0]
+        snapshot_name = droplet_snapshot_name[1]
+
+    snapshots = MANAGER.get_all_snapshots()
+
+    if create:
+        current_snapshot_count = len(snapshots)
+        droplet = getDroplet(droplet_name)
+        droplet.take_snapshot(snapshot_name, True, True)
+        while len(MANAGER.get_all_snapshots()) <= current_snapshot_count:
+            time.sleep(5)
+
+        snapshots = MANAGER.get_all_snapshots()
+        for s in snapshots:
+            if s.name == snapshot_name or s.id == snapshot_name:
+                print(f"Created snapshot ({snapshot_name}, {s.id})")
+                start(s.name)
+                return
+
+    if destroy:
+        for s in snapshots:
+            if s.name == snapshot_name or s.id == snapshot_name:
+                s.destroy()
+                print(f"Snapshot {s.name} destroyed")
+                return
+        print("No snapshot by that name/id to destroy")
 
 
 @ocean.command()
